@@ -87,6 +87,15 @@ decision first. Everything non-actionable lands in the report's notes column.
    even when its diff is test-only. A test-only diff therefore needs `/test e2e-ocp-helm` for
    evidence and one `/publish` for the status, not a publish per test iteration.
 
+   A PR that touches no workspace is the exception: there is nothing to build and nothing to publish,
+   so the `publish` status is at best a no-op and at worst never created at all, and the head sits
+   `BLOCKED` on the one required check while every substantive check is green. Both outcomes have
+   been seen on this repository: the no-op job has written a success status for such a head, and it
+   has also been refused and written nothing. Treat that status as optional. Merge on the evidence
+   that does exist — `Check and test`, which drives the changed script through node, plus
+   `SonarCloud` — with the admin override, and say in the rationale that the required status cannot
+   be relied on for this head rather than leaving the bypass unexplained.
+
    A Prow e2e check sitting at `pending — Job triggered` for half an hour is not a stall. The trigger
    hands the run to an external system that provisions a cluster and runs Playwright there, so the
    status changes only when that run finishes, and the check reports nothing in between. Do not re-post

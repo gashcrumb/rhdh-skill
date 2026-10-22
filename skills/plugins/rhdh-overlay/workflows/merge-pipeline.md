@@ -131,10 +131,12 @@ decision first. Everything non-actionable lands in the report's notes column.
    pointless. Before spending a build or a test cycle on a stale head, re-read the diff against `main`
    and ask whether the code it patches still looks the way the PR assumes and whether the failure it
    exists for still reproduces — then decide between rebase, re-scope, and close. In practice the
-   answer is often close: of the stale PRs examined on 2026-10-22, four were retired this way, one
+   answer is often close: of the stale PRs examined on 2026-10-22, three were retired this way — one
    because a dependency upgrade had already applied its fix, one because a workspace rework had
-   rewritten the tests it edited, one because the root cause had been removed at source, and one
-   because the test it skipped had been superseded.
+   rewritten the tests it edited, and one because the root cause had been removed at source. A fourth
+   was sent to a rebase and a fifth merged only after the skip premise it rests on had been checked
+   against five nightly builds, which is a different test: age asks whether the premise moved, the
+   nightly asks whether the failure it covers still happens.
 
    The script turns that into the command plan rather than leaving it as advice: a stale head whose
    stage would ask for `/publish` or `/test e2e-ocp-helm` is given the rebase request instead, since a

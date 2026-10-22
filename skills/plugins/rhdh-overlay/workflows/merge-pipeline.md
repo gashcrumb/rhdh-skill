@@ -75,6 +75,13 @@ decision first. Everything non-actionable lands in the report's notes column.
    first. The request quotes the failing analysis comment's URL, because the findings live there and the
    agent reads them directly. A later `Quality Gate passed`, or a failure older than the head, is a
    superseded analysis and is not a stage.
+
+   Spend **one** fix attempt on it, then check whether the analysis is actually required. In this
+   repository it is not: the `main` ruleset requires exactly one status check, `publish`. An advisory
+   failure therefore informs the merge instead of blocking it, and a second round that leaves a
+   structural residue — duplication measured as a percentage of *new* lines punishes a small diff for
+   a single repeated block — is money spent to satisfy a dashboard. Proceed, and record the residue in
+   the merge rationale.
 5. **Only trusted comments gate.** A slash command from a bot, or from an outside contributor, does
    not satisfy the gate. GitHub Apps report a `CONTRIBUTOR` association, which reads like a human's
    and is not one.

@@ -9,6 +9,7 @@ Stages, in order:
 
     code        review findings open, a fix agent run is needed
     fixing      a fix agent run is in flight
+    sonar       the SonarQube quality gate failed for this head
     gate        review clean, waiting for a trusted /ok-to-test
     publish     gate passed, no successful publish for the current head
     publishing  /publish posted, the publish check has not settled
@@ -52,6 +53,7 @@ KNOWN_BOTS = {
 REVIEW_AGENT = "fullsend-ai-review"
 FIX_AGENT = "fullsend-ai-coder"
 TEST_BOT = "rhdh-test-bot"
+SONAR_BOT = "sonarqubecloud"
 
 E2E_RESULT = re.compile(r"###\s*(✅|❌|⚠️)?\s*(Passed|Failed|Skipped)\s+E2E Tests")
 E2E_COUNTS = re.compile(
@@ -178,6 +180,7 @@ def collect_signals(pr: dict) -> dict:
         "diagnoses": [],
         "rejections": [],
         "findings": [],
+        "sonar": None,
     }
     for review in pr.get("reviews") or []:
         author = (review.get("author") or {}).get("login") or ""
@@ -238,6 +241,14 @@ def collect_signals(pr: dict) -> dict:
             signals["diagnoses"].append((stamp, body))
         if "Cannot trigger testing until a trusted user" in body:
             signals["rejections"].append(stamp)
+        if author == SONAR_BOT:
+            # The last analysis wins: a later pass supersedes an earlier failure,
+            # and a failure older than the head has been superseded by the push.
+            signals["sonar"] = {
+                "at": stamp,
+                "failed": "Quality Gate failed" in body,
+                "url": comment.get("url") or "",
+            }
         if author == REVIEW_AGENT:
             found = FINDING.findall(body)
             if found:
@@ -312,11 +323,25 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
     if started and (finished is None or finished[0] < started):
         return result("fixing", "none", "a fix run is in progress")
 
+    sonar = signals["sonar"]
+    sonar_open = bool(sonar and sonar["failed"] and after(sonar, head_at))
+
     changes = latest(signals["changes_requested"])
     if changes and not any(pair[1] and after(pair, changes) for pair in signals["fixes"]):
         if any(not pair[1] and after(pair, changes) for pair in signals["fixes"]):
             notes.append("the last fix run failed")
+        if sonar_open:
+            notes.append(f"the quality gate also failed: {sonar['url']}")
         return result("code", FIX_REQUEST, "review findings are open")
+
+    # Ranked above the gate and the publish: the fix is another commit, and a
+    # commit invalidates any publish, smoke, or e2e result already earned.
+    if sonar_open:
+        return result(
+            "sonar",
+            f"/fs-fix can you address the sonarqubecloud findings in {sonar['url']}",
+            "the quality gate failed for this head",
+        )
 
     if not latest(signals["ok_to_test"]):
         return result("gate", "/ok-to-test", "no trusted /ok-to-test yet")

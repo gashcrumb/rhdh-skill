@@ -21,12 +21,13 @@ BEFORE = "2026-10-19T10:00:00Z"
 AFTER = "2026-10-20T11:00:00Z"
 
 
-def comment(login, body, at=AFTER, association="MEMBER"):
+def comment(login, body, at=AFTER, association="MEMBER", url=None):
     return {
         "author": {"login": login},
         "authorAssociation": association,
         "body": body,
         "createdAt": at,
+        "url": url,
     }
 
 
@@ -52,6 +53,20 @@ def smoke_report(ok=True, at=AFTER):
         f":white_check_mark: [Smoke tests workflow](https://github.com/o/r/actions/runs/2) {verdict}.",
         at=at,
         association="CONTRIBUTOR",
+    )
+
+
+SONAR_URL = "https://github.com/o/r/pull/4444#issuecomment-1"
+
+
+def sonar_report(failed=True, at=AFTER):
+    verdict = "Quality Gate failed" if failed else "Quality Gate passed"
+    return comment(
+        "sonarqubecloud",
+        f"## **{verdict}**\nFailed conditions\n28.6% Duplication on New Code",
+        at=at,
+        association="NONE",
+        url=SONAR_URL,
     )
 
 
@@ -302,6 +317,58 @@ def test_a_head_with_no_started_run_gets_one_requested():
     result = classify(pr)
     assert result["stage"] == "e2e"
     assert result["command"] == "/test e2e-ocp-helm"
+
+
+def test_a_failed_quality_gate_names_the_comment_to_address():
+    pr = make_pr(comments=[comment("a-reviewer", "/ok-to-test"), sonar_report()])
+
+    result = classify(pr)
+    assert result["stage"] == "sonar"
+    assert result["command"] == (
+        f"/fs-fix can you address the sonarqubecloud findings in {SONAR_URL}"
+    )
+
+
+def test_a_failed_quality_gate_outranks_the_publish_it_would_invalidate():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=HEAD, starts_e2e=True),
+            smoke_report(ok=True, at=AFTER),
+            e2e_report(passed=True, at=AFTER),
+            sonar_report(at=AFTER),
+        ],
+        mergeStateStatus="CLEAN",
+    )
+
+    assert classify(pr)["stage"] == "sonar"
+
+
+def test_a_passing_quality_gate_is_not_a_stage():
+    pr = make_pr(
+        comments=[comment("a-reviewer", "/ok-to-test", at=BEFORE), sonar_report(failed=False)]
+    )
+
+    assert classify(pr)["stage"] == "publish"
+
+
+def test_a_quality_gate_failure_older_than_the_head_is_superseded():
+    pr = make_pr(
+        comments=[comment("a-reviewer", "/ok-to-test", at=BEFORE), sonar_report(at=BEFORE)]
+    )
+
+    assert classify(pr)["stage"] == "publish"
+
+
+def test_open_review_findings_win_over_the_quality_gate():
+    pr = make_pr(
+        reviews=[review("fullsend-ai-review", "CHANGES_REQUESTED", at=BEFORE)],
+        comments=[sonar_report()],
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "code"
+    assert any(SONAR_URL in note for note in result["notes"])
 
 
 def test_a_blocked_merge_is_not_a_reason_to_rerun_the_tests():

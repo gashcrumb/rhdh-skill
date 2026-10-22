@@ -44,6 +44,7 @@ decision first. Everything non-actionable lands in the report's notes column.
 |---|---|---|---|
 | `code` | review findings open | `fullsend-ai-review` requested changes, no fix run since | `/fs-fix` |
 | `fixing` | the fix agent is working | a `Fix · Started` comment with no outcome after it | wait |
+| `sonar` | the quality gate failed for this head | the last `sonarqubecloud` comment says `Quality Gate failed` and postdates the head | `/fs-fix` against that comment |
 | `gate` | waiting for a trusted user | no `/ok-to-test` from a member, owner, or collaborator | `/ok-to-test` |
 | `publish` | no images for this head | no successful publish dated at or after the head commit | `/publish` |
 | `publishing` | publish running | `publish` check pending, queued, or in progress | wait |
@@ -69,10 +70,15 @@ decision first. Everything non-actionable lands in the report's notes column.
    `/test e2e-ocp-helm` itself, so a published head already has a run queued: the `e2e` stage means
    wait, not retrigger. The report asks for `/test e2e-ocp-helm` only when no run was started for the
    head. A rerun after a failure is a deliberate choice, and worth stating in the comment.
-4. **Only trusted comments gate.** A slash command from a bot, or from an outside contributor, does
+4. **A quality-gate failure outranks the gate and the publish.** Fixing SonarQube findings means another
+   commit, and a commit invalidates every publish, smoke, and e2e result already earned, so the fix goes
+   first. The request quotes the failing analysis comment's URL, because the findings live there and the
+   agent reads them directly. A later `Quality Gate passed`, or a failure older than the head, is a
+   superseded analysis and is not a stage.
+5. **Only trusted comments gate.** A slash command from a bot, or from an outside contributor, does
    not satisfy the gate. GitHub Apps report a `CONTRIBUTOR` association, which reads like a human's
    and is not one.
-5. **One workspace per PR.** The e2e scope is `-w <workspace>`. If the script reports more than one
+6. **One workspace per PR.** The e2e scope is `-w <workspace>`. If the script reports more than one
    workspace for a PR, the pipeline steps do not apply to it unchanged.
 
 ## Acting on the report
@@ -85,11 +91,11 @@ and follow the gate it owns.
    `redhat-developer/rhdh-plugin-export-overlays#<number>@<head-sha>`, the preview body is the command
    — and wait for approval before posting any of them.
 3. Post only what was approved, one PR at a time, and report each one's comment URL.
-4. For `/fs-fix`, post the standard request:
-   `/fs-fix can you address the review threads and rebase this PR branch`. The review threads are the
-   specification — the agent reads them directly — so do not paraphrase the findings into the comment.
-   A rewritten instruction is a new specification, and a wrong one becomes a commit. The report still
-   lists the findings in its notes, for your own reading.
+4. For `/fs-fix`, post the command the report prints. It is already the right body for the stage: the
+   standard request to address the review threads and rebase, or, when the quality gate failed, that
+   analysis comment's URL. Both point the agent at the threads or the findings, which it reads itself.
+   Do not paraphrase the findings into the comment: a rewritten instruction is a new specification, and
+   a wrong one becomes a commit. The report lists the review findings in its notes, for your reading.
 5. Do not poll. An e2e run takes minutes to tens of minutes; post the step, report, and end the turn.
    The next `status` invocation shows what happened. A fix run is the same: it announces itself with a
    workflow link, then reports an outcome, and the `fixing` stage exists so a second request is not

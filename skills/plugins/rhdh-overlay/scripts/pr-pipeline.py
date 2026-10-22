@@ -8,6 +8,7 @@ each PR needs next, and never posts a PR comment.
 Stages, in order:
 
     code        review findings open, a fix agent run is needed
+    fixing      a fix agent run is in flight
     gate        review clean, waiting for a trusted /ok-to-test
     publish     gate passed, no successful publish for the current head
     publishing  /publish posted, the publish check has not settled
@@ -61,6 +62,10 @@ COMMAND_LINE = re.compile(
     r"^\s*/(ok-to-test|publish|test\s+e2e-ocp-helm|fs-fix|fs-diagnose|retest)\b"
 )
 PUBLISH_CHECK_NAMES = {"publish"}
+
+# What a code-clean review still needs: the fix agent reads the review threads
+# itself, so the request points at them rather than paraphrasing them.
+FIX_REQUEST = "/fs-fix can you address the review threads and rebase this PR branch"
 
 
 def state_home() -> Path:
@@ -164,6 +169,7 @@ def collect_signals(pr: dict) -> dict:
         "changes_requested": [],
         "approved": [],
         "fixes": [],
+        "fix_starts": [],
         "ok_to_test": [],
         "publish_requests": [],
         "publish_results": [],
@@ -196,8 +202,14 @@ def collect_signals(pr: dict) -> dict:
                 signals["ok_to_test"].append(stamp)
             elif command == "publish":
                 signals["publish_requests"].append(stamp)
-        if author == FIX_AGENT and "Finished Fix" in body:
-            signals["fixes"].append((stamp, "❌" not in body))
+        if author == FIX_AGENT:
+            if "Finished Fix" in body:
+                signals["fixes"].append((stamp, "❌" not in body))
+            elif "Fix · Started" in body:
+                # The coder announces the run with a workflow link before it reports
+                # an outcome. A run with no outcome yet is in flight, and asking for
+                # another one would start a second run against the same findings.
+                signals["fix_starts"].append(stamp)
         # Workflow outcomes are identified by the run link they carry, not by the
         # author: gh reports these comments as `github-actions` and associates them
         # as CONTRIBUTOR, indistinguishable from a bot that must not satisfy a gate.
@@ -295,11 +307,16 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
     if pr.get("isDraft"):
         notes.append("draft PR")
 
+    started = latest(signals["fix_starts"])
+    finished = latest(signals["fixes"])
+    if started and (finished is None or finished[0] < started):
+        return result("fixing", "none", "a fix run is in progress")
+
     changes = latest(signals["changes_requested"])
     if changes and not any(pair[1] and after(pair, changes) for pair in signals["fixes"]):
         if any(not pair[1] and after(pair, changes) for pair in signals["fixes"]):
             notes.append("the last fix run failed")
-        return result("code", "/fs-fix", "review findings are open")
+        return result("code", FIX_REQUEST, "review findings are open")
 
     if not latest(signals["ok_to_test"]):
         return result("gate", "/ok-to-test", "no trusted /ok-to-test yet")
@@ -394,7 +411,13 @@ def render(rows: list[dict], deltas: list[dict], ledger: dict, path: Path) -> st
         lines.append("|---|---|---|---|---|---|")
         for row in rows:
             workspace = row["workspace"] or "-"
-            notes = "; ".join(row["notes"]) or ""
+            notes = list(row["notes"])
+            # Findings are only the specification while a fix is owed; on a PR that
+            # already moved past review they are stale and just add noise.
+            if row["findings"] and row["stage"] in {"code", "fixing"}:
+                unique = list(dict.fromkeys(row["findings"]))
+                notes.append("findings: " + "; ".join(unique[:2]))
+            notes = "; ".join(notes)
             command = row["command"] if row["command"] != "none" else "wait"
             lines.append(
                 f"| #{row['number']} | `{workspace}` | {short(parse_time(row['head_at']))} "
@@ -417,11 +440,7 @@ def render(rows: list[dict], deltas: list[dict], ledger: dict, path: Path) -> st
         lines.append("Posting any of these is an external write and needs approval first.")
         lines.append("")
         for row in actionable:
-            body = row["command"]
-            if body == "/fs-fix" and row["findings"]:
-                unique = list(dict.fromkeys(row["findings"]))
-                body = f"/fs-fix {'; '.join(unique[:3])}"
-            lines.append(f"- `#{row['number']}` ({row['stage']}): `{body}`")
+            lines.append(f"- `#{row['number']}` ({row['stage']}): `{row['command']}`")
         lines.append("")
     moves = [delta for delta in deltas if delta["changed"]]
     if moves:

@@ -94,7 +94,71 @@ def test_open_findings_need_a_fix_run():
     pr = make_pr(reviews=[review("fullsend-ai-review", "CHANGES_REQUESTED")])
 
     assert classify(pr)["stage"] == "code"
-    assert classify(pr)["command"] == "/fs-fix"
+    assert (
+        classify(pr)["command"]
+        == "/fs-fix can you address the review threads and rebase this PR branch"
+    )
+
+
+def fix_started(at=AFTER):
+    return comment(
+        "fullsend-ai-coder",
+        "<!-- fullsend:agent-status:39770670549 -->\n"
+        "\U0001f916 Fix \u00b7 Started 11:28 AM UTC\n\nCommit: `ce68fe8` \u00b7 "
+        "[View workflow run \u2192](https://github.com/o/r/actions/runs/39770670549)",
+        at=at,
+        association="CONTRIBUTOR",
+    )
+
+
+def test_a_fix_run_in_flight_is_not_asked_for_again():
+    pr = make_pr(
+        reviews=[review("fullsend-ai-review", "CHANGES_REQUESTED", at=BEFORE)],
+        comments=[
+            comment("a-reviewer", "/fs-fix can you address the review threads", at=BEFORE),
+            fix_started(),
+        ],
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "fixing"
+    assert result["command"] == "none"
+
+
+def test_a_finished_fix_clears_the_in_flight_stage():
+    pr = make_pr(
+        reviews=[review("fullsend-ai-review", "CHANGES_REQUESTED", at=BEFORE)],
+        comments=[
+            fix_started(at=BEFORE),
+            comment(
+                "fullsend-ai-coder",
+                "\U0001f916 Finished Fix \u00b7 \u2705 Success",
+                at=AFTER,
+                association="CONTRIBUTOR",
+            ),
+        ],
+    )
+
+    assert classify(pr)["stage"] == "gate"
+
+
+def test_a_fix_that_started_after_the_findings_and_failed_reports_a_retry():
+    pr = make_pr(
+        reviews=[review("fullsend-ai-review", "CHANGES_REQUESTED", at=BEFORE)],
+        comments=[
+            fix_started(at=BEFORE),
+            comment(
+                "fullsend-ai-coder",
+                "\U0001f916 Finished Fix \u00b7 \u274c Failure",
+                at=AFTER,
+                association="CONTRIBUTOR",
+            ),
+        ],
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "code"
+    assert "the last fix run failed" in result["notes"]
 
 
 def test_a_fix_run_after_the_findings_clears_the_code_stage():

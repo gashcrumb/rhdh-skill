@@ -43,6 +43,7 @@ decision first. Everything non-actionable lands in the report's notes column.
 | Stage | Meaning | Signal | Next |
 |---|---|---|---|
 | `code` | review findings open | `fullsend-ai-review` requested changes, no fix run since | `/fs-fix` |
+| `fixing` | the fix agent is working | a `Fix · Started` comment with no outcome after it | wait |
 | `gate` | waiting for a trusted user | no `/ok-to-test` from a member, owner, or collaborator | `/ok-to-test` |
 | `publish` | no images for this head | no successful publish dated at or after the head commit | `/publish` |
 | `publishing` | publish running | `publish` check pending, queued, or in progress | wait |
@@ -84,10 +85,15 @@ and follow the gate it owns.
    `redhat-developer/rhdh-plugin-export-overlays#<number>@<head-sha>`, the preview body is the command
    — and wait for approval before posting any of them.
 3. Post only what was approved, one PR at a time, and report each one's comment URL.
-4. For `/fs-fix`, quote the review findings the report lists. Never invent the instruction text: the
-   findings are the specification, and a wrong instruction becomes a commit.
+4. For `/fs-fix`, post the standard request:
+   `/fs-fix can you address the review threads and rebase this PR branch`. The review threads are the
+   specification — the agent reads them directly — so do not paraphrase the findings into the comment.
+   A rewritten instruction is a new specification, and a wrong one becomes a commit. The report still
+   lists the findings in its notes, for your own reading.
 5. Do not poll. An e2e run takes minutes to tens of minutes; post the step, report, and end the turn.
-   The next `status` invocation shows what happened.
+   The next `status` invocation shows what happened. A fix run is the same: it announces itself with a
+   workflow link, then reports an outcome, and the `fixing` stage exists so a second request is not
+   posted against a run that is already working.
 
 ## Reporting
 

@@ -18,6 +18,7 @@ Stages, in order:
     smoke       images published, waiting for the smoke test
     e2e         smoke green, waiting for the e2e run
     mergeable   every gate green for the current head
+    superseded  the branch carries no changes, so there is nothing to merge
     held        parked on purpose; the stage is not actionable
 
 Failure stages name what to investigate: ``publish-failed``, ``smoke-failed``,
@@ -359,6 +360,11 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
         return result("held", "none")
     if pr.get("isDraft"):
         notes.append("draft PR")
+    if not pr.get("files"):
+        # A fix that reverts the PR to what main already has leaves an empty
+        # branch: the publish workflow cancels it, so the only move is to close.
+        notes.append("the branch is identical to main, so there is nothing to merge")
+        return result("superseded", "none")
 
     started = latest(signals["fix_starts"])
     finished = latest(signals["fixes"])
@@ -440,6 +446,11 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
     if runs and not runs[-1]["passed"]:
         counts = " / ".join(runs[-1]["counts"]) if runs[-1]["counts"] else "unknown counts"
         notes.append(f"e2e failed (passed / failed / flaky / skipped: {counts})")
+        # A re-run requested after the failure has already answered it, and the
+        # publish check can take a minute to appear. Reporting the old failure
+        # here is what tempts a second request.
+        if any(after(request, runs[-1]["at"]) for request in signals["publish_requests"]):
+            return result("publishing", "none", "re-run requested after the failure")
         covering = [dx for dx in signals["diagnoses"] if after(dx, runs[-1]["at"])]
         if covering:
             # Diagnosing an already-diagnosed run only repeats the same answer.

@@ -57,6 +57,7 @@ decision first. Everything non-actionable lands in the report's notes column.
 | `e2e-failed` | tests failed | last e2e result for this head is not a pass | `/fs-diagnose`, or re-run or none when a diagnosis already covers the run |
 | `blocked` | tests green, merge refused | merge state blocked by a required check or approval | wait |
 | `mergeable` | every gate green | pass for this head, merge state not blocked | merge |
+| `superseded` | nothing left to merge | the PR carries no changed files — a fix reverted it back to `main` | close it |
 | `held` | parked on purpose | the ledger says so | none |
 
 ## Invariants

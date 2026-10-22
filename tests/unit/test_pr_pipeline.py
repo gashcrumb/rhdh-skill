@@ -319,6 +319,35 @@ def test_a_passing_run_older_than_the_head_is_not_evidence():
     assert result["command"] == "/publish"
 
 
+def test_a_branch_with_no_changes_is_superseded():
+    pr = make_pr(
+        files=[],
+        comments=[comment("a-reviewer", "/ok-to-test", at=BEFORE), e2e_report(passed=False)],
+        reviews=[review("fullsend-ai-review", "CHANGES_REQUESTED", at=BEFORE)],
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "superseded"
+    assert result["command"] == "none"
+    assert any("nothing to merge" in note for note in result["notes"])
+
+
+def test_a_rerun_requested_after_the_failure_is_waited_on():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=BEFORE),
+            smoke_report(ok=True, at=BEFORE),
+            e2e_report(passed=False, at=AFTER),
+            comment("a-reviewer", "/publish", at=LATER),
+        ]
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "publishing"
+    assert result["command"] == "none"
+
+
 def test_a_ci_diagnosis_becomes_a_request_to_implement_its_findings():
     pr = make_pr(
         comments=[

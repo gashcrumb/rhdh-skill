@@ -33,7 +33,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_REPO = "redhat-developer/rhdh-plugin-export-overlays"
@@ -72,6 +72,12 @@ PUBLISH_CHECK_NAMES = {"publish"}
 # What a code-clean review still needs: the fix agent reads the review threads
 # itself, so the request points at them rather than paraphrasing them.
 FIX_REQUEST = "/fs-fix can you address the review threads and rebase this PR branch"
+
+# A branch older than this is a premise risk, not just a merge conflict risk:
+# the code it patches and the failure it exists for may both be gone, and a
+# rebase is cheaper than a build that proves an obsolete diff. Two weeks is the
+# point where the backlogs in this repository start to rot.
+STALE_DAYS = 14
 
 
 def state_home() -> Path:
@@ -333,19 +339,36 @@ def after(item, moment: datetime | None) -> bool:
     return stamp is not None and stamp >= moment
 
 
-def classify(pr: dict, hold_reason: str | None = None) -> dict:
+def classify(pr: dict, hold_reason: str | None = None, now: datetime | None = None) -> dict:
     """Return the pipeline stage and next command for one PR.
 
     The stage is the most actionable thing about the PR, not the earliest unmet
     gate: a PR with failing e2e evidence reports ``e2e-failed`` even if its
     publish predates the current head, because the failure is what needs a
     decision. Everything not actionable goes into ``notes``.
+
+    ``now`` exists so the staleness rule is testable: a branch older than
+    ``STALE_DAYS`` is a premise risk as well as a conflict risk, so it earns a
+    rebase before it earns a build.
     """
     signals = collect_signals(pr)
     head_at = max(signals["commits"]) if signals["commits"] else None
+    moment = now or datetime.now(timezone.utc)
+    age = moment - head_at if head_at else None
+    stale = bool(age and age >= timedelta(days=STALE_DAYS))
     notes: list[str] = []
 
     def result(stage: str, command: str, detail: str = "") -> dict:
+        if stale:
+            notes.append(
+                f"the head is {age.days} days old: re-check that the code it patches and the "
+                "failure it exists for still match main before merging"
+            )
+            if command in ("/publish", "/test e2e-ocp-helm"):
+                command, detail = (
+                    FIX_REQUEST,
+                    "rebase as well as fix before publishing a stale head",
+                )
         return {
             "stage": stage,
             "command": command,

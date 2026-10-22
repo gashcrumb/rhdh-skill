@@ -126,6 +126,22 @@ decision first. Everything non-actionable lands in the report's notes column.
 8. **One workspace per PR.** The e2e scope is `-w <workspace>`. If the script reports more than one
    workspace for a PR, the pipeline steps do not apply to it unchanged.
 
+9. **Age is a premise check, not just a rebase.** A head older than `STALE_DAYS` (14) is reported with
+   its age, because the two rot mechanisms are independent: a branch can rebase cleanly and still be
+   pointless. Before spending a build or a test cycle on a stale head, re-read the diff against `main`
+   and ask whether the code it patches still looks the way the PR assumes and whether the failure it
+   exists for still reproduces — then decide between rebase, re-scope, and close. In practice the
+   answer is often close: of the stale PRs examined on 2026-10-22, four were retired this way, one
+   because a dependency upgrade had already applied its fix, one because a workspace rework had
+   rewritten the tests it edited, one because the root cause had been removed at source, and one
+   because the test it skipped had been superseded.
+
+   The script turns that into the command plan rather than leaving it as advice: a stale head whose
+   stage would ask for `/publish` or `/test e2e-ocp-helm` is given the rebase request instead, since a
+   build proves the artifact, not the premise. A stale head that is otherwise ready to merge keeps
+   `merge` and carries the note, because merging an old branch is normal and the note is the decision
+   input.
+
 ## Acting on the report
 
 The script is read-only. Posting anything is an external write: invoke the named skill `mutation-gate`

@@ -145,7 +145,14 @@ def make_pr(**overrides):
     return pr
 
 
+# Every fixture is dated relative to HEAD, and the classifier compares against a
+# clock to decide staleness. Pinning the clock one day after HEAD keeps the
+# suite independent of the wall-clock date it runs on.
+NOW = "2026-10-21T10:00:00Z"
+
+
 def classify(pr, **kwargs):
+    kwargs.setdefault("now", pipeline.parse_time(NOW))
     return pipeline.classify(pr, **kwargs)
 
 
@@ -277,6 +284,63 @@ def test_a_missing_publish_for_the_head_asks_for_one():
     result = classify(pr)
     assert result["stage"] == "publish"
     assert result["command"] == "/publish"
+
+
+def test_a_stale_head_asks_for_a_rebase_before_publishing():
+    pr = make_pr(
+        comments=[comment("a-reviewer", "/ok-to-test"), publish_report(ok=True, at=BEFORE)]
+    )
+    twenty_days_later = pipeline.parse_time(HEAD) + pipeline.timedelta(days=20)
+
+    result = classify(pr, now=twenty_days_later)
+    assert result["stage"] == "publish"
+    assert result["command"] == pipeline.FIX_REQUEST
+    assert any("20 days old" in note for note in result["notes"])
+    assert any("still match main" in note for note in result["notes"])
+
+
+def test_a_stale_head_asks_for_a_rebase_before_rerunning_the_tests():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=HEAD, starts_e2e=True),
+            smoke_report(ok=True, at=AFTER),
+            e2e_report(passed=False, at=AFTER),
+            diagnosis_report(verdict="flake, unrelated to this PR", details="flake"),
+        ]
+    )
+    twenty_days_later = pipeline.parse_time(HEAD) + pipeline.timedelta(days=20)
+
+    result = classify(pr, now=twenty_days_later)
+    assert result["command"] == pipeline.FIX_REQUEST
+
+
+def test_a_recent_head_is_not_stale():
+    pr = make_pr(
+        comments=[comment("a-reviewer", "/ok-to-test"), publish_report(ok=True, at=BEFORE)]
+    )
+
+    result = classify(pr, now=pipeline.parse_time(HEAD) + pipeline.timedelta(days=2))
+    assert result["command"] == "/publish"
+    assert not any("days old" in note for note in result["notes"])
+
+
+def test_a_stale_mergeable_head_is_flagged_but_still_mergeable():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=HEAD, starts_e2e=True),
+            smoke_report(ok=True, at=AFTER),
+            e2e_report(passed=True, at=AFTER),
+        ],
+        mergeStateStatus="CLEAN",
+    )
+    twenty_days_later = pipeline.parse_time(HEAD) + pipeline.timedelta(days=20)
+
+    result = classify(pr, now=twenty_days_later)
+    assert result["stage"] == "mergeable"
+    assert result["command"] == "merge"
+    assert any("20 days old" in note for note in result["notes"])
 
 
 def test_a_running_publish_check_is_not_actionable():

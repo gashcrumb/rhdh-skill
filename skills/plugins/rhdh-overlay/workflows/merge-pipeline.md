@@ -45,7 +45,8 @@ decision first. Everything non-actionable lands in the report's notes column.
 | `diagnosed` | a CI diagnosis traced the failures to this PR | a `fullsend-ai-review` review saying `PR-regression` that postdates the head | `/fs-fix` against that diagnosis comment |
 | `code` | review findings open | `fullsend-ai-review` requested changes, no fix run since | `/fs-fix` |
 | `fixing` | the fix agent is working | a `Fix · Started` comment with no outcome after it | wait |
-| `sonar` | the quality gate failed for this head | the last `sonarqubecloud` comment says `Quality Gate failed` and postdates the head | `/fs-fix` against that comment |
+| `fix-failed` | two fix runs in a row produced no commit | two unsuccessful outcomes with different run ids, newest after the head | none — a human decides why |
+| `sonar` | the quality gate failed for this head and has not been attempted | the last `sonarqubecloud` comment says `Quality Gate failed`, postdates the head, and no fix run started after it | `/fs-fix` against that comment |
 | `gate` | waiting for a trusted user | no `/ok-to-test` from a member, owner, or collaborator | `/ok-to-test` |
 | `publish` | no images for this head | no successful publish dated at or after the head commit | `/publish` |
 | `publishing` | publish running | `publish` check pending, queued, or in progress | wait |
@@ -60,18 +61,24 @@ decision first. Everything non-actionable lands in the report's notes column.
 
 ## Invariants
 
-1. **The gate is sticky, the evidence is not.** `/ok-to-test` authorises a PR once; later commits do
+1. **A repeated request is a stall, not progress.** Two fix runs in a row that produced no commit for
+   the same head is a pattern, not bad luck: the third request buys the same failure. The stage becomes
+   `fix-failed` with no command, the note links the failing comment, and a human reads the reason. One
+   failure inside a PR's history is still a retry — agent runs die for transient reasons, and a run can
+   report twice for the same workflow link, so outcomes are counted per run id.
+
+2. **The gate is sticky, the evidence is not.** `/ok-to-test` authorises a PR once; later commits do
    not revoke it. A publish, smoke, or e2e result speaks only for the head it ran against, so a
    result older than the latest commit is not evidence. The script compares every result to the head
    commit and says so when a result predates it.
-2. **Order is fix, gate, publish.** Publishing before the gate is refused outright — openshift-ci
+3. **Order is fix, gate, publish.** Publishing before the gate is refused outright — openshift-ci
    answers "Cannot trigger testing until a trusted user reviews the PR and leaves an `/ok-to-test`
    message" — and costs a second publish cycle once the gate arrives.
-3. **The publish workflow starts the tests.** A successful publish report ends by posting
+4. **The publish workflow starts the tests.** A successful publish report ends by posting
    `/test e2e-ocp-helm` itself, so a published head already has a run queued: the `e2e` stage means
    wait, not retrigger. The report asks for `/test e2e-ocp-helm` only when no run was started for the
    head. A rerun after a failure is a deliberate choice, and worth stating in the comment.
-4. **A quality-gate failure outranks the gate and the publish.** Fixing SonarQube findings means another
+5. **A quality-gate failure outranks the gate and the publish.** Fixing SonarQube findings means another
    commit, and a commit invalidates every publish, smoke, and e2e result already earned, so the fix goes
    first. The request quotes the failing analysis comment's URL, because the findings live there and the
    agent reads them directly. A later `Quality Gate passed`, or a failure older than the head, is a
@@ -83,7 +90,12 @@ decision first. Everything non-actionable lands in the report's notes column.
    structural residue — duplication measured as a percentage of *new* lines punishes a small diff for
    a single repeated block — is money spent to satisfy a dashboard. Proceed, and record the residue in
    the merge rationale.
-5. **A diagnosis beats a review thread.** When the failing run has been diagnosed, the diagnosis says
+
+   The script enforces that budget: once a fix run has been attempted for the failing analysis it
+   reports the residue as a note and lets the PR reach `gate` and `publish`, instead of returning
+   `sonar` until the gate turns green. An attempt counts from its start comment *or* its outcome,
+   because a run that dies early announces only the outcome.
+6. **A diagnosis beats a review thread.** When the failing run has been diagnosed, the diagnosis says
    which check failed and why, and it is derived from the run rather than from reading the diff. Its
    comment is the specification, so the fix request quotes that comment: `/fs-fix can you incorporate
    the findings in <comment URL> to fix the e2e tests?`. The review that accompanies it is a summary of
@@ -98,10 +110,10 @@ decision first. Everything non-actionable lands in the report's notes column.
    asks for a re-run (`/publish` for the same head); a pre-existing or product-bug verdict means the
    run cannot be made green by this PR, so the command is `none` and the note says to hold it or force
    it through. Diagnosing an already-diagnosed run only repeats the same answer.
-6. **Only trusted comments gate.** A slash command from a bot, or from an outside contributor, does
+7. **Only trusted comments gate.** A slash command from a bot, or from an outside contributor, does
    not satisfy the gate. GitHub Apps report a `CONTRIBUTOR` association, which reads like a human's
    and is not one.
-7. **One workspace per PR.** The e2e scope is `-w <workspace>`. If the script reports more than one
+8. **One workspace per PR.** The e2e scope is `-w <workspace>`. If the script reports more than one
    workspace for a PR, the pipeline steps do not apply to it unchanged.
 
 ## Acting on the report

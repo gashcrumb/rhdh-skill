@@ -10,6 +10,7 @@ Stages, in order:
     diagnosed   a CI diagnosis named the failure as this PR's regression
     code        review findings open, a fix agent run is needed
     fixing      a fix agent run is in flight
+    fix-failed  two fix runs in a row ended without a commit
     sonar       the SonarQube quality gate failed for this head
     gate        review clean, waiting for a trusted /ok-to-test
     publish     gate passed, no successful publish for the current head
@@ -19,8 +20,8 @@ Stages, in order:
     mergeable   every gate green for the current head
     held        parked on purpose; the stage is not actionable
 
-Failure stages name what to investigate: ``publish-failed``, ``smoke-failed``
-and ``e2e-failed``.
+Failure stages name what to investigate: ``publish-failed``, ``smoke-failed``,
+``e2e-failed`` and ``fix-failed``.
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ E2E_COUNTS = re.compile(
     r"Passed:\s*(\d+)\s*\|\s*Failed:\s*(\d+)\s*\|\s*Flaky:\s*(\d+)\s*\|\s*Skipped:\s*(\d+)"
 )
 FINDING = re.compile(r"^- \*\*\[([^\]]+)\]", re.MULTILINE)
+RUN_ID = re.compile(r"/actions/runs/(\d+)")
 COMMAND_LINE = re.compile(
     r"^\s*/(ok-to-test|publish|test\s+e2e-ocp-helm|fs-fix|fs-diagnose|retest)\b"
 )
@@ -215,8 +217,19 @@ def collect_signals(pr: dict) -> dict:
             elif command == "publish":
                 signals["publish_requests"].append(stamp)
         if author == FIX_AGENT:
-            if "Finished Fix" in body:
-                signals["fixes"].append((stamp, "❌" not in body))
+            # One run can report twice — a terminal status comment and a separate
+            # post-script failure with the same workflow link — so outcomes are
+            # keyed by run id and a failure wins over a success for the same run.
+            if "Finished Fix" in body or "Post-fix script failed" in body:
+                run = RUN_ID.search(body)
+                signals["fixes"].append(
+                    {
+                        "at": stamp,
+                        "ok": "Finished Fix" in body and "❌" not in body,
+                        "run": run.group(1) if run else stamp.isoformat(),
+                        "url": comment.get("url") or "",
+                    }
+                )
             elif "Fix · Started" in body:
                 # The coder announces the run with a workflow link before it reports
                 # an outcome. A run with no outcome yet is in flight, and asking for
@@ -274,7 +287,18 @@ def collect_signals(pr: dict) -> dict:
     for key in ("changes_requested", "approved", "ok_to_test", "publish_requests"):
         signals[key] = [s for s in signals[key] if s]
     signals["commits"] = [c for c in signals["commits"] if c]
+    signals["fixes"] = _one_outcome_per_run(signals["fixes"])
     return signals
+
+
+def _one_outcome_per_run(outcomes: list[dict]) -> list[dict]:
+    """Collapse repeated reports for the same fix run, keeping a failure."""
+    merged: dict[str, dict] = {}
+    for outcome in outcomes:
+        seen = merged.get(outcome["run"])
+        if seen is None or (seen["ok"] and not outcome["ok"]) or outcome["at"] > seen["at"]:
+            merged[outcome["run"]] = outcome
+    return sorted(merged.values(), key=lambda outcome: outcome["at"])
 
 
 def publish_check_state(pr: dict) -> str:
@@ -338,11 +362,14 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
 
     started = latest(signals["fix_starts"])
     finished = latest(signals["fixes"])
-    if started and (finished is None or finished[0] < started):
+    if started and (finished is None or finished["at"] < started):
         return result("fixing", "none", "a fix run is in progress")
 
     sonar = signals["sonar"]
     sonar_open = bool(sonar and sonar["failed"] and after(sonar, head_at))
+    # A run that died before announcing itself still counts as an attempt, so
+    # both the start and the outcome comments are evidence that it was tried.
+    fix_attempts = [*signals["fix_starts"], *signals["fixes"]]
 
     # A CI diagnosis is derived from the failing run rather than from reading
     # the diff, so it names the failure more precisely than the review that
@@ -354,9 +381,22 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
         details = [entry for entry in signals["diagnoses"] if after(entry, head_at)]
         if details:
             diagnosis = details[-1]
-    addressed = bool(
-        diagnosis and any(pair[1] and after(pair, verdict) for pair in signals["fixes"])
-    )
+    addressed = bool(diagnosis and any(f["ok"] and after(f, verdict) for f in signals["fixes"]))
+    changes = latest(signals["changes_requested"])
+    code_open = bool(changes and not any(f["ok"] and after(f, changes) for f in signals["fixes"]))
+    wants_fix = bool(diagnosis and not addressed) or code_open or sonar_open
+
+    # A fix run that ended without a commit changed nothing, so repeating the
+    # same request asks for the same run again. One failure is worth a retry —
+    # agent runs die for transient reasons — but two in a row for the same head
+    # is a pattern, and the next attempt would be the third of the same thing.
+    failed_fixes = [f for f in signals["fixes"] if not f["ok"] and after(f, head_at)]
+    if len(failed_fixes) >= 2 and wants_fix:
+        notes.append(f"two fix runs in a row failed; the last: {failed_fixes[-1]['url']}")
+        if sonar_open:
+            notes.append(f"the quality gate is still failing: {sonar['url']}")
+        return result("fix-failed", "none", "two fix runs in a row ended without a commit")
+
     if diagnosis and not addressed:
         return result(
             "diagnosed",
@@ -364,21 +404,26 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
             "a CI diagnosis traced the failures to this PR",
         )
 
-    changes = latest(signals["changes_requested"])
-    if changes and not any(pair[1] and after(pair, changes) for pair in signals["fixes"]):
-        if any(not pair[1] and after(pair, changes) for pair in signals["fixes"]):
-            notes.append("the last fix run failed")
+    if code_open:
+        if any(not f["ok"] and after(f, changes) for f in signals["fixes"]):
+            notes.append("the last fix run failed, so this is a retry")
         if sonar_open:
             notes.append(f"the quality gate also failed: {sonar['url']}")
         return result("code", FIX_REQUEST, "review findings are open")
 
     # Ranked above the gate and the publish: the fix is another commit, and a
-    # commit invalidates any publish, smoke, or e2e result already earned.
-    if sonar_open:
+    # commit invalidates any publish, smoke, or e2e result already earned. But
+    # only one attempt is spent per analysis — the gate is advisory here, and a
+    # second cycle delays the publish and e2e it would invalidate anyway.
+    if sonar_open and not any(after(attempt, sonar["at"]) for attempt in fix_attempts):
         return result(
             "sonar",
             f"/fs-fix can you address the sonarqubecloud findings in {sonar['url']}",
             "the quality gate failed for this head",
+        )
+    if sonar_open:
+        notes.append(
+            f"the quality gate is still red after a fix attempt, and is advisory: {sonar['url']}"
         )
 
     if not latest(signals["ok_to_test"]):

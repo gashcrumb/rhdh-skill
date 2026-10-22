@@ -19,6 +19,7 @@ SPEC.loader.exec_module(pipeline)
 HEAD = "2026-10-20T10:00:00Z"
 BEFORE = "2026-10-19T10:00:00Z"
 AFTER = "2026-10-20T11:00:00Z"
+LATER = "2026-10-20T12:00:00Z"
 
 
 def comment(login, body, at=AFTER, association="MEMBER", url=None):
@@ -108,6 +109,21 @@ def e2e_report(passed=True, at=AFTER, counts=(7, 16, 0, 4)):
         at=at,
         association="NONE",
     )
+
+
+def fix_finished(ok=False, at=AFTER, run="39778417478", post_script=False):
+    if post_script:
+        body = (
+            "\u26a0\ufe0f **Post-fix script failed** \u2014 Push rejected (exit code 1)\n\n"
+            "**Workflow run:** https://github.com/o/r/actions/runs/" + run
+        )
+    else:
+        marker = "\u2705 Success" if ok else "\u274c Failure"
+        body = (
+            f"\U0001f916 Finished Fix \u00b7 {marker}\n\n"
+            f"**Workflow run:** https://github.com/o/r/actions/runs/{run}"
+        )
+    return comment("fullsend-ai-coder", body, at=at, association="CONTRIBUTOR")
 
 
 def make_pr(**overrides):
@@ -201,7 +217,7 @@ def test_a_fix_that_started_after_the_findings_and_failed_reports_a_retry():
 
     result = classify(pr)
     assert result["stage"] == "code"
-    assert "the last fix run failed" in result["notes"]
+    assert any("the last fix run failed" in note for note in result["notes"])
 
 
 def test_a_fix_run_after_the_findings_clears_the_code_stage():
@@ -235,7 +251,7 @@ def test_a_failed_fix_run_is_reported_not_treated_as_a_fix():
 
     result = classify(pr)
     assert result["stage"] == "code"
-    assert "the last fix run failed" in result["notes"]
+    assert any("the last fix run failed" in note for note in result["notes"])
 
 
 def test_a_bot_cannot_satisfy_the_trusted_gate():
@@ -507,6 +523,45 @@ def test_open_review_findings_win_over_the_quality_gate():
     result = classify(pr)
     assert result["stage"] == "code"
     assert any(SONAR_URL in note for note in result["notes"])
+
+
+def test_a_quality_gate_is_attempted_once_then_reported_as_residue():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            sonar_report(at=HEAD),
+            fix_finished(at=AFTER, run="1"),
+        ]
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "publish"
+    assert any("advisory" in note for note in result["notes"])
+
+
+def test_two_fix_runs_that_produced_nothing_stop_the_retry():
+    pr = make_pr(
+        reviews=[review("fullsend-ai-review", "CHANGES_REQUESTED", at=BEFORE)],
+        comments=[fix_finished(at=AFTER, run="1"), fix_finished(at=LATER, run="2")],
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "fix-failed"
+    assert result["command"] == "none"
+
+
+def test_one_run_reporting_twice_is_one_attempt():
+    pr = make_pr(
+        reviews=[review("fullsend-ai-review", "CHANGES_REQUESTED", at=BEFORE)],
+        comments=[
+            fix_finished(ok=True, at=AFTER, run="9"),
+            fix_finished(at=LATER, run="9", post_script=True),
+        ],
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "code"
+    assert "two fix runs in a row" not in " ".join(result["notes"])
 
 
 def test_a_blocked_merge_is_not_a_reason_to_rerun_the_tests():

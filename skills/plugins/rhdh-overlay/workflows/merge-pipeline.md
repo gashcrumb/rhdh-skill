@@ -86,6 +86,13 @@ decision first. Everything non-actionable lands in the report's notes column.
    check on this repository's `main` ruleset, so a head that has never been published cannot merge
    even when its diff is test-only. A test-only diff therefore needs `/test e2e-ocp-helm` for
    evidence and one `/publish` for the status, not a publish per test iteration.
+
+   A Prow e2e check sitting at `pending — Job triggered` for half an hour is not a stall. The trigger
+   hands the run to an external system that provisions a cluster and runs Playwright there, so the
+   status changes only when that run finishes, and the check reports nothing in between. Do not re-post
+   `/test e2e-ocp-helm` or `/publish` against a pending e2e check: that queues a duplicate run behind
+   the first one, and the second result speaks for the same head anyway.
+
 5. **A quality-gate failure outranks the gate and the publish.** Fixing SonarQube findings means another
    commit, and a commit invalidates every publish, smoke, and e2e result already earned, so the fix goes
    first. The request quotes the failing analysis comment's URL, because the findings live there and the

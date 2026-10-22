@@ -145,6 +145,23 @@ decision first. Everything non-actionable lands in the report's notes column.
    against five nightly builds, which is a different test: age asks whether the premise moved, the
    nightly asks whether the failure it covers still happens.
 
+   For a test-fix PR the issue is not the specification. The issue records what broke; the file
+   records whether the PR still patches it. The common way a test fix dies is not that the failure
+   went away but that someone fixed the same defect a different way — `.first()` instead of a scoped
+   locator, a substring match instead of a regex, a different search term entirely — which leaves the
+   issue text perfectly accurate and the hunks obsolete. Read the touched files at the current head
+   and compare the hunks to them before deciding. When the PR is a skip, also count its `test.skip`
+   additions against the failing tests the issue lists: one skip per failing test, placed inside the
+   test, because a `describe`-level skip silently disables whatever is added to that block later. A
+   skip PR superseded by a narrower skip is closed on that basis alone; the product bug it works
+   around stays open, because the skip never fixed it.
+
+   A red nightly is not by itself evidence that the failure still reproduces, and a single green one
+   is not proof that it died. Read why it failed: an error at 0ms means the test body never ran, and a
+   0ms failure or a rollout timeout carrying a webhook 500 or an unready database pod is deployment
+   infrastructure rather than the assertion under examination. A close on nightly evidence wants the
+   same test passing across several consecutive builds.
+
    The script turns that into the command plan rather than leaving it as advice: a stale head whose
    stage would ask for `/publish` or `/test e2e-ocp-helm` is given the rebase request instead, since a
    build proves the artifact, not the premise. A stale head that is otherwise ready to merge keeps

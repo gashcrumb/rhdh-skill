@@ -75,10 +75,17 @@ decision first. Everything non-actionable lands in the report's notes column.
 3. **Order is fix, gate, publish.** Publishing before the gate is refused outright — openshift-ci
    answers "Cannot trigger testing until a trusted user reviews the PR and leaves an `/ok-to-test`
    message" — and costs a second publish cycle once the gate arrives.
-4. **The publish workflow starts the tests.** A successful publish report ends by posting
-   `/test e2e-ocp-helm` itself, so a published head already has a run queued: the `e2e` stage means
-   wait, not retrigger. The report asks for `/test e2e-ocp-helm` only when no run was started for the
-   head. A rerun after a failure is a deliberate choice, and worth stating in the comment.
+4. **The publish workflow starts the tests, and a re-run is `/test e2e-ocp-helm`.** A successful
+   publish report ends by posting `/test e2e-ocp-helm` itself, so a published head already has a run
+   queued: the `e2e` stage means wait, not retrigger. The report asks for `/test e2e-ocp-helm` only
+   when no run was started for the head. A re-run after a failure is a deliberate choice, and worth
+   stating in the comment.
+
+   `/publish` is for the artifact, not for the tests. It rebuilds the workspace's plugin images and
+   is the only thing that creates the `publish` commit status — which is the single required status
+   check on this repository's `main` ruleset, so a head that has never been published cannot merge
+   even when its diff is test-only. A test-only diff therefore needs `/test e2e-ocp-helm` for
+   evidence and one `/publish` for the status, not a publish per test iteration.
 5. **A quality-gate failure outranks the gate and the publish.** Fixing SonarQube findings means another
    commit, and a commit invalidates every publish, smoke, and e2e result already earned, so the fix goes
    first. The request quotes the failing analysis comment's URL, because the findings live there and the
@@ -108,7 +115,9 @@ decision first. Everything non-actionable lands in the report's notes column.
    findings implemented, which makes it the trustworthy signal.
 
    A diagnosis that does not blame the PR changes the next step rather than the stage. A flake verdict
-   asks for a re-run (`/publish` for the same head); a pre-existing or product-bug verdict means the
+   asks for `/test e2e-ocp-helm`, which runs the tests again without rebuilding: the plugin images did
+   not change, so a publish would spend a build to produce the same artifact. A pre-existing or
+   product-bug verdict means the
    run cannot be made green by this PR, so the command is `none` and the note says to hold it or force
    it through. Diagnosing an already-diagnosed run only repeats the same answer.
 7. **Only trusted comments gate.** A slash command from a bot, or from an outside contributor, does

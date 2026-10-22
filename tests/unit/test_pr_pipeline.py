@@ -332,6 +332,22 @@ def test_a_branch_with_no_changes_is_superseded():
     assert any("nothing to merge" in note for note in result["notes"])
 
 
+def test_a_test_rerun_after_the_failure_is_waited_on():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=BEFORE),
+            smoke_report(ok=True, at=BEFORE),
+            e2e_report(passed=False, at=AFTER),
+            comment("a-reviewer", "/test e2e-ocp-helm", at=LATER),
+        ]
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "e2e"
+    assert result["command"] == "none"
+
+
 def test_a_rerun_requested_after_the_failure_is_waited_on():
     pr = make_pr(
         comments=[
@@ -380,7 +396,8 @@ def test_a_flake_diagnosis_asks_for_a_re_run_instead_of_another_diagnosis():
 
     result = classify(pr)
     assert result["stage"] == "e2e-failed"
-    assert result["command"] == "/publish"
+    # A flake needs the tests run again, not the plugin images rebuilt.
+    assert result["command"] == "/test e2e-ocp-helm"
     assert "the diagnosis expects a re-run to pass" in result["notes"]
 
 

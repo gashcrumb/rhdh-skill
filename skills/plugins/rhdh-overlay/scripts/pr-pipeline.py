@@ -178,6 +178,7 @@ def collect_signals(pr: dict) -> dict:
         "fix_starts": [],
         "ok_to_test": [],
         "publish_requests": [],
+        "test_requests": [],
         "publish_results": [],
         "smoke_results": [],
         "e2e_results": [],
@@ -217,6 +218,8 @@ def collect_signals(pr: dict) -> dict:
                 signals["ok_to_test"].append(stamp)
             elif command == "publish":
                 signals["publish_requests"].append(stamp)
+            elif command == "test":
+                signals["test_requests"].append(stamp)
         if author == FIX_AGENT:
             # One run can report twice — a terminal status comment and a separate
             # post-script failure with the same workflow link — so outcomes are
@@ -285,7 +288,7 @@ def collect_signals(pr: dict) -> dict:
             found = FINDING.findall(body)
             if found:
                 signals["findings"] = found
-    for key in ("changes_requested", "approved", "ok_to_test", "publish_requests"):
+    for key in ("changes_requested", "approved", "ok_to_test", "publish_requests", "test_requests"):
         signals[key] = [s for s in signals[key] if s]
     signals["commits"] = [c for c in signals["commits"] if c]
     signals["fixes"] = _one_outcome_per_run(signals["fixes"])
@@ -449,6 +452,8 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
         # A re-run requested after the failure has already answered it, and the
         # publish check can take a minute to appear. Reporting the old failure
         # here is what tempts a second request.
+        if any(after(request, runs[-1]["at"]) for request in signals["test_requests"]):
+            return result("e2e", "none", "test re-run requested after the failure")
         if any(after(request, runs[-1]["at"]) for request in signals["publish_requests"]):
             return result("publishing", "none", "re-run requested after the failure")
         covering = [dx for dx in signals["diagnoses"] if after(dx, runs[-1]["at"])]
@@ -459,9 +464,11 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
             verdict = found["verdict"]
             if "flake" in verdict or "no action needed" in verdict or "re-running" in verdict:
                 notes.append("the diagnosis expects a re-run to pass")
+                # A flake needs the tests run again, not the artifact rebuilt:
+                # the plugin images the tests exercise did not change.
                 if not published:
                     notes.append("the successful publish predates this head")
-                return result("e2e-failed", "/publish", "re-run the checks for this head")
+                return result("e2e-failed", "/test e2e-ocp-helm", "re-run the checks for this head")
             notes.append("the diagnosis does not blame this PR — hold it or force it through")
             return result("e2e-failed", "none", "diagnosed as not this PR's fault")
         if not published:

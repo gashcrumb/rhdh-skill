@@ -31,8 +31,8 @@ def comment(login, body, at=AFTER, association="MEMBER", url=None):
     }
 
 
-def review(login, state, at=AFTER):
-    return {"author": {"login": login}, "state": state, "submittedAt": at}
+def review(login, state, at=AFTER, body=""):
+    return {"author": {"login": login}, "state": state, "submittedAt": at, "body": body}
 
 
 def publish_report(ok=True, at=AFTER, starts_e2e=False):
@@ -71,15 +71,30 @@ def sonar_report(failed=True, at=AFTER):
     )
 
 
-def diagnosis_report(pr_regression=True, at=AFTER, url=None):
-    check = "pr_regression" if pr_regression else "flake"
+def diagnosis_report(verdict="This is the PR's fault", at=AFTER, url=None, details="pr_regression"):
     return comment(
         "fullsend-ai-review",
-        "<!-- ci-diagnose -->\n### CI Diagnosis\n\n"
-        f"<code>ci/prow/e2e-ocp-helm</code> \u2014 {check} (5 tests failing across 3 projects)",
+        "<!-- ci-diagnose -->\n### \U0001f50d CI Diagnosis\n\n"
+        f"**Verdict:** {verdict}\n\n"
+        f"<details>\n<summary>\u274c <code>ci/prow/e2e-ocp-helm</code> \u2014 {details}</summary>\n"
+        "</details>",
         at=at,
         association="CONTRIBUTOR",
         url=url or DIAGNOSIS_URL,
+    )
+
+
+def diagnosis_review(at=AFTER, body=None):
+    """The review the diagnose agent raises when it wants its findings implemented."""
+    return review(
+        "fullsend-ai-review",
+        "CHANGES_REQUESTED",
+        at=at,
+        body=body
+        or (
+            "CI diagnosis found PR-regression failures on `abc123`.\n\n"
+            "These findings are caused by this PR. Implement each suggested fix."
+        ),
     )
 
 
@@ -296,7 +311,8 @@ def test_a_ci_diagnosis_becomes_a_request_to_implement_its_findings():
             smoke_report(ok=True, at=BEFORE),
             e2e_report(passed=False, at=BEFORE),
             diagnosis_report(),
-        ]
+        ],
+        reviews=[diagnosis_review()],
     )
 
     result = classify(pr)
@@ -306,6 +322,23 @@ def test_a_ci_diagnosis_becomes_a_request_to_implement_its_findings():
     )
 
 
+def test_a_flake_diagnosis_asks_for_a_re_run_instead_of_another_diagnosis():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=BEFORE),
+            smoke_report(ok=True, at=BEFORE),
+            e2e_report(passed=False, at=AFTER),
+            diagnosis_report(verdict="Intermittent OIDC login flake. Re-running should pass."),
+        ]
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "e2e-failed"
+    assert result["command"] == "/publish"
+    assert "the diagnosis expects a re-run to pass" in result["notes"]
+
+
 def test_a_diagnosis_that_blames_something_else_is_left_alone():
     pr = make_pr(
         comments=[
@@ -313,13 +346,37 @@ def test_a_diagnosis_that_blames_something_else_is_left_alone():
             publish_report(ok=True, at=BEFORE),
             smoke_report(ok=True, at=BEFORE),
             e2e_report(passed=False, at=AFTER),
-            diagnosis_report(pr_regression=False),
+            diagnosis_report(
+                verdict="Not this PR\u2019s fault \u2014 a pre-existing RHDH auth session issue.",
+                details="pre_existing",
+            ),
         ]
     )
 
     result = classify(pr)
     assert result["stage"] == "e2e-failed"
-    assert result["command"] == "/fs-diagnose"
+    assert result["command"] == "none"
+    assert "the diagnosis does not blame this PR" in " ".join(result["notes"])
+
+
+def test_a_verdict_that_quotes_another_verdict_is_not_actionable():
+    """A diagnosis mentions the other verdicts in its previous-diagnosis prose."""
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=BEFORE),
+            smoke_report(ok=True, at=BEFORE),
+            e2e_report(passed=True, at=BEFORE),
+            diagnosis_report(
+                verdict="All curated checks are now passing. No action needed.",
+                details="pr_regression",
+            ),
+        ]
+    )
+
+    result = classify(pr)
+    assert result["stage"] != "diagnosed"
+    assert "incorporate the findings" not in result["command"]
 
 
 def test_a_fix_run_after_the_diagnosis_answers_it():
@@ -328,25 +385,32 @@ def test_a_fix_run_after_the_diagnosis_answers_it():
             comment("a-reviewer", "/ok-to-test", at=BEFORE),
             publish_report(ok=True, at=BEFORE),
             smoke_report(ok=True, at=BEFORE),
-            diagnosis_report(at=BEFORE),
+            diagnosis_report(at=HEAD),
             fix_started(),
-        ]
+        ],
+        reviews=[diagnosis_review(at=HEAD)],
     )
 
     assert classify(pr)["stage"] == "fixing"
 
 
 def test_a_diagnosis_older_than_the_head_is_superseded():
+    """A later commit supersedes the diagnosis, so the plain request is used."""
     pr = make_pr(
         comments=[
             comment("a-reviewer", "/ok-to-test", at=BEFORE),
             publish_report(ok=True, at=BEFORE),
             smoke_report(ok=True, at=BEFORE),
             diagnosis_report(at=BEFORE),
-        ]
+        ],
+        reviews=[diagnosis_review(at=BEFORE)],
     )
 
-    assert classify(pr)["stage"] == "publish"
+    result = classify(pr)
+    assert result["stage"] == "code"
+    assert (
+        result["command"] == "/fs-fix can you address the review threads and rebase this PR branch"
+    )
 
 
 def test_a_failing_head_reports_e2e_failed_even_when_the_publish_is_stale():

@@ -179,6 +179,7 @@ def collect_signals(pr: dict) -> dict:
         "smoke_results": [],
         "e2e_results": [],
         "diagnoses": [],
+        "diagnosis_reviews": [],
         "rejections": [],
         "findings": [],
         "sonar": None,
@@ -190,6 +191,13 @@ def collect_signals(pr: dict) -> dict:
         submitted = parse_time(review.get("submittedAt"))
         if review.get("state") == "CHANGES_REQUESTED":
             signals["changes_requested"].append(submitted)
+            # The agent raises this review only when it wants the findings
+            # implemented, so it is the gate. The diagnosis comment itself
+            # cannot be searched: its prose quotes the other verdicts too
+            # ("Previous diagnosis ... pr_regression") even when the current
+            # verdict is flake, pre-existing, or "no action needed".
+            if "PR-regression" in (review.get("body") or ""):
+                signals["diagnosis_reviews"].append(submitted)
         elif review.get("state") == "APPROVED":
             signals["approved"].append(submitted)
 
@@ -239,15 +247,15 @@ def collect_signals(pr: dict) -> dict:
                 }
             )
         if author == REVIEW_AGENT and "ci-diagnose" in body:
-            # The diagnosis names a verdict per check. Only the PR's own
-            # regressions are ours to fix; flake, pre-existing, config, and
-            # product bugs are left alone by design.
+            # Where the findings live, so this is what the fix request quotes.
+            # The verdict is the one line that says whose failure this is.
+            verdict = ""
+            for line in body.splitlines():
+                if line.startswith("**Verdict:**"):
+                    verdict = line.split("**Verdict:**", 1)[1].strip().lower()
+                    break
             signals["diagnoses"].append(
-                {
-                    "at": stamp,
-                    "url": comment.get("url") or "",
-                    "pr_regression": "pr_regression" in body,
-                }
+                {"at": stamp, "url": comment.get("url") or "", "verdict": verdict}
             )
         if "Cannot trigger testing until a trusted user" in body:
             signals["rejections"].append(stamp)
@@ -336,16 +344,18 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
     sonar = signals["sonar"]
     sonar_open = bool(sonar and sonar["failed"] and after(sonar, head_at))
 
-    # A CI diagnosis is the most specific statement of what to fix, and it is
-    # derived from the failing run rather than from reading the diff. Ranked
-    # ahead of the plain review request, which would point at the diagnosis
-    # review rather than at the findings it summarises.
+    # A CI diagnosis is derived from the failing run rather than from reading
+    # the diff, so it names the failure more precisely than the review that
+    # summarises it. Ranked ahead of the plain review request, and it points at
+    # the findings comment rather than at the review.
     diagnosis = None
-    for candidate in signals["diagnoses"]:
-        if candidate["pr_regression"] and after(candidate, head_at):
-            diagnosis = candidate
+    verdict = latest(signals["diagnosis_reviews"])
+    if verdict and after(verdict, head_at):
+        details = [entry for entry in signals["diagnoses"] if after(entry, head_at)]
+        if details:
+            diagnosis = details[-1]
     addressed = bool(
-        diagnosis and any(pair[1] and after(pair, diagnosis["at"]) for pair in signals["fixes"])
+        diagnosis and any(pair[1] and after(pair, verdict) for pair in signals["fixes"])
     )
     if diagnosis and not addressed:
         return result(
@@ -385,8 +395,19 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
     if runs and not runs[-1]["passed"]:
         counts = " / ".join(runs[-1]["counts"]) if runs[-1]["counts"] else "unknown counts"
         notes.append(f"e2e failed (passed / failed / flaky / skipped: {counts})")
-        if any(after(dx, runs[-1]["at"]) for dx in signals["diagnoses"]):
-            notes.append("a diagnosis already covers this run")
+        covering = [dx for dx in signals["diagnoses"] if after(dx, runs[-1]["at"])]
+        if covering:
+            # Diagnosing an already-diagnosed run only repeats the same answer.
+            found = covering[-1]
+            notes.append(f"diagnosed on {found['url']}")
+            verdict = found["verdict"]
+            if "flake" in verdict or "no action needed" in verdict or "re-running" in verdict:
+                notes.append("the diagnosis expects a re-run to pass")
+                if not published:
+                    notes.append("the successful publish predates this head")
+                return result("e2e-failed", "/publish", "re-run the checks for this head")
+            notes.append("the diagnosis does not blame this PR — hold it or force it through")
+            return result("e2e-failed", "none", "diagnosed as not this PR's fault")
         if not published:
             notes.append("the successful publish predates this head")
         return result("e2e-failed", "/fs-diagnose", "e2e failed for the current head")

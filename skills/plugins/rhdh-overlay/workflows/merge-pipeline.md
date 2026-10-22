@@ -42,7 +42,7 @@ decision first. Everything non-actionable lands in the report's notes column.
 
 | Stage | Meaning | Signal | Next |
 |---|---|---|---|
-| `diagnosed` | a CI diagnosis traced the failures to this PR | a `fullsend-ai-review` comment marked `ci-diagnose` that reports `pr_regression` and postdates the head | `/fs-fix` against that diagnosis |
+| `diagnosed` | a CI diagnosis traced the failures to this PR | a `fullsend-ai-review` review saying `PR-regression` that postdates the head | `/fs-fix` against that diagnosis comment |
 | `code` | review findings open | `fullsend-ai-review` requested changes, no fix run since | `/fs-fix` |
 | `fixing` | the fix agent is working | a `Fix · Started` comment with no outcome after it | wait |
 | `sonar` | the quality gate failed for this head | the last `sonarqubecloud` comment says `Quality Gate failed` and postdates the head | `/fs-fix` against that comment |
@@ -53,7 +53,7 @@ decision first. Everything non-actionable lands in the report's notes column.
 | `smoke` | images out, load check pending | publish succeeded, no smoke result for this head | wait |
 | `smoke-failed` | smoke failed | failed smoke report newer than the head | `/fs-diagnose` |
 | `e2e` | smoke green, tests pending | no e2e result for this head | wait |
-| `e2e-failed` | tests failed | last e2e result for this head is not a pass | `/fs-diagnose` |
+| `e2e-failed` | tests failed | last e2e result for this head is not a pass | `/fs-diagnose`, or re-run or none when a diagnosis already covers the run |
 | `blocked` | tests green, merge refused | merge state blocked by a required check or approval | wait |
 | `mergeable` | every gate green | pass for this head, merge state not blocked | merge |
 | `held` | parked on purpose | the ledger says so | none |
@@ -87,9 +87,17 @@ decision first. Everything non-actionable lands in the report's notes column.
    which check failed and why, and it is derived from the run rather than from reading the diff. Its
    comment is the specification, so the fix request quotes that comment: `/fs-fix can you incorporate
    the findings in <comment URL> to fix the e2e tests?`. The review that accompanies it is a summary of
-   the same findings, and pointing at the summary loses the detail. A diagnosis that reports only
-   flake, pre-existing, config, or product-bug checks is not actionable here — leave those alone and
-   the PR stays at `e2e-failed`.
+   the same findings, and pointing at the summary loses the detail.
+
+   The gate is that review, not the diagnosis body. A diagnosis quotes every verdict it considered —
+   "Previous diagnosis ... `pr_regression`" — even when its own verdict is flake or "no action needed",
+   so the body can never be searched for a keyword. The agent raises the review only when it wants its
+   findings implemented, which makes it the trustworthy signal.
+
+   A diagnosis that does not blame the PR changes the next step rather than the stage. A flake verdict
+   asks for a re-run (`/publish` for the same head); a pre-existing or product-bug verdict means the
+   run cannot be made green by this PR, so the command is `none` and the note says to hold it or force
+   it through. Diagnosing an already-diagnosed run only repeats the same answer.
 6. **Only trusted comments gate.** A slash command from a bot, or from an outside contributor, does
    not satisfy the gate. GitHub Apps report a `CONTRIBUTOR` association, which reads like a human's
    and is not one.

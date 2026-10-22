@@ -57,6 +57,7 @@ def smoke_report(ok=True, at=AFTER):
 
 
 SONAR_URL = "https://github.com/o/r/pull/4444#issuecomment-1"
+DIAGNOSIS_URL = "https://github.com/o/r/pull/4444#issuecomment-2"
 
 
 def sonar_report(failed=True, at=AFTER):
@@ -67,6 +68,18 @@ def sonar_report(failed=True, at=AFTER):
         at=at,
         association="NONE",
         url=SONAR_URL,
+    )
+
+
+def diagnosis_report(pr_regression=True, at=AFTER, url=None):
+    check = "pr_regression" if pr_regression else "flake"
+    return comment(
+        "fullsend-ai-review",
+        "<!-- ci-diagnose -->\n### CI Diagnosis\n\n"
+        f"<code>ci/prow/e2e-ocp-helm</code> \u2014 {check} (5 tests failing across 3 projects)",
+        at=at,
+        association="CONTRIBUTOR",
+        url=url or DIAGNOSIS_URL,
     )
 
 
@@ -273,6 +286,67 @@ def test_a_passing_run_older_than_the_head_is_not_evidence():
     result = classify(pr)
     assert result["stage"] == "publish"
     assert result["command"] == "/publish"
+
+
+def test_a_ci_diagnosis_becomes_a_request_to_implement_its_findings():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=BEFORE),
+            smoke_report(ok=True, at=BEFORE),
+            e2e_report(passed=False, at=BEFORE),
+            diagnosis_report(),
+        ]
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "diagnosed"
+    assert result["command"] == (
+        f"/fs-fix can you incorporate the findings in {DIAGNOSIS_URL} to fix the e2e tests?"
+    )
+
+
+def test_a_diagnosis_that_blames_something_else_is_left_alone():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=BEFORE),
+            smoke_report(ok=True, at=BEFORE),
+            e2e_report(passed=False, at=AFTER),
+            diagnosis_report(pr_regression=False),
+        ]
+    )
+
+    result = classify(pr)
+    assert result["stage"] == "e2e-failed"
+    assert result["command"] == "/fs-diagnose"
+
+
+def test_a_fix_run_after_the_diagnosis_answers_it():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=BEFORE),
+            smoke_report(ok=True, at=BEFORE),
+            diagnosis_report(at=BEFORE),
+            fix_started(),
+        ]
+    )
+
+    assert classify(pr)["stage"] == "fixing"
+
+
+def test_a_diagnosis_older_than_the_head_is_superseded():
+    pr = make_pr(
+        comments=[
+            comment("a-reviewer", "/ok-to-test", at=BEFORE),
+            publish_report(ok=True, at=BEFORE),
+            smoke_report(ok=True, at=BEFORE),
+            diagnosis_report(at=BEFORE),
+        ]
+    )
+
+    assert classify(pr)["stage"] == "publish"
 
 
 def test_a_failing_head_reports_e2e_failed_even_when_the_publish_is_stale():

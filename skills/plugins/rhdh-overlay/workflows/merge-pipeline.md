@@ -42,6 +42,7 @@ decision first. Everything non-actionable lands in the report's notes column.
 
 | Stage | Meaning | Signal | Next |
 |---|---|---|---|
+| `diagnosed` | a CI diagnosis traced the failures to this PR | a `fullsend-ai-review` comment marked `ci-diagnose` that reports `pr_regression` and postdates the head | `/fs-fix` against that diagnosis |
 | `code` | review findings open | `fullsend-ai-review` requested changes, no fix run since | `/fs-fix` |
 | `fixing` | the fix agent is working | a `Fix · Started` comment with no outcome after it | wait |
 | `sonar` | the quality gate failed for this head | the last `sonarqubecloud` comment says `Quality Gate failed` and postdates the head | `/fs-fix` against that comment |
@@ -82,10 +83,17 @@ decision first. Everything non-actionable lands in the report's notes column.
    structural residue — duplication measured as a percentage of *new* lines punishes a small diff for
    a single repeated block — is money spent to satisfy a dashboard. Proceed, and record the residue in
    the merge rationale.
-5. **Only trusted comments gate.** A slash command from a bot, or from an outside contributor, does
+5. **A diagnosis beats a review thread.** When the failing run has been diagnosed, the diagnosis says
+   which check failed and why, and it is derived from the run rather than from reading the diff. Its
+   comment is the specification, so the fix request quotes that comment: `/fs-fix can you incorporate
+   the findings in <comment URL> to fix the e2e tests?`. The review that accompanies it is a summary of
+   the same findings, and pointing at the summary loses the detail. A diagnosis that reports only
+   flake, pre-existing, config, or product-bug checks is not actionable here — leave those alone and
+   the PR stays at `e2e-failed`.
+6. **Only trusted comments gate.** A slash command from a bot, or from an outside contributor, does
    not satisfy the gate. GitHub Apps report a `CONTRIBUTOR` association, which reads like a human's
    and is not one.
-6. **One workspace per PR.** The e2e scope is `-w <workspace>`. If the script reports more than one
+7. **One workspace per PR.** The e2e scope is `-w <workspace>`. If the script reports more than one
    workspace for a PR, the pipeline steps do not apply to it unchanged.
 
 ## Acting on the report

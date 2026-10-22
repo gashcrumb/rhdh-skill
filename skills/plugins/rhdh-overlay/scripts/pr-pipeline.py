@@ -7,6 +7,7 @@ each PR needs next, and never posts a PR comment.
 
 Stages, in order:
 
+    diagnosed   a CI diagnosis named the failure as this PR's regression
     code        review findings open, a fix agent run is needed
     fixing      a fix agent run is in flight
     sonar       the SonarQube quality gate failed for this head
@@ -238,7 +239,16 @@ def collect_signals(pr: dict) -> dict:
                 }
             )
         if author == REVIEW_AGENT and "ci-diagnose" in body:
-            signals["diagnoses"].append((stamp, body))
+            # The diagnosis names a verdict per check. Only the PR's own
+            # regressions are ours to fix; flake, pre-existing, config, and
+            # product bugs are left alone by design.
+            signals["diagnoses"].append(
+                {
+                    "at": stamp,
+                    "url": comment.get("url") or "",
+                    "pr_regression": "pr_regression" in body,
+                }
+            )
         if "Cannot trigger testing until a trusted user" in body:
             signals["rejections"].append(stamp)
         if author == SONAR_BOT:
@@ -326,6 +336,24 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
     sonar = signals["sonar"]
     sonar_open = bool(sonar and sonar["failed"] and after(sonar, head_at))
 
+    # A CI diagnosis is the most specific statement of what to fix, and it is
+    # derived from the failing run rather than from reading the diff. Ranked
+    # ahead of the plain review request, which would point at the diagnosis
+    # review rather than at the findings it summarises.
+    diagnosis = None
+    for candidate in signals["diagnoses"]:
+        if candidate["pr_regression"] and after(candidate, head_at):
+            diagnosis = candidate
+    addressed = bool(
+        diagnosis and any(pair[1] and after(pair, diagnosis["at"]) for pair in signals["fixes"])
+    )
+    if diagnosis and not addressed:
+        return result(
+            "diagnosed",
+            f"/fs-fix can you incorporate the findings in {diagnosis['url']} to fix the e2e tests?",
+            "a CI diagnosis traced the failures to this PR",
+        )
+
     changes = latest(signals["changes_requested"])
     if changes and not any(pair[1] and after(pair, changes) for pair in signals["fixes"]):
         if any(not pair[1] and after(pair, changes) for pair in signals["fixes"]):
@@ -357,7 +385,7 @@ def classify(pr: dict, hold_reason: str | None = None) -> dict:
     if runs and not runs[-1]["passed"]:
         counts = " / ".join(runs[-1]["counts"]) if runs[-1]["counts"] else "unknown counts"
         notes.append(f"e2e failed (passed / failed / flaky / skipped: {counts})")
-        if any(after(diagnosis, runs[-1]["at"]) for diagnosis in signals["diagnoses"]):
+        if any(after(dx, runs[-1]["at"]) for dx in signals["diagnoses"]):
             notes.append("a diagnosis already covers this run")
         if not published:
             notes.append("the successful publish predates this head")

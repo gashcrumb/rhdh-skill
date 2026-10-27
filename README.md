@@ -7,9 +7,9 @@ behind a small set of task-oriented interfaces.
 
 ## Install
 
-Install the pack and the three external skills it depends on. The second
-command is one source for `/grilling`, `/code-review`, and `/handoff`. Each
-command opens the skills wizard, which asks where to put them:
+Install the pack, then the external skills it leans on: `/grilling`,
+`/code-review`, and `/handoff` come from `mattpocock/skills`. Each command
+opens the skills wizard, which asks where to put them:
 
 ```bash
 npx skills add redhat-developer/rhdh-skills --global

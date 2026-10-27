@@ -1,7 +1,7 @@
 # Install or repair the complete collection
 
 The primary path installs the official `RHDH complete` skills.sh pack. The catalog is the local
-source of truth for the promoted skill set and its three required external dependencies.
+source of truth for the promoted skill set.
 
 1. State the installation plan:
 

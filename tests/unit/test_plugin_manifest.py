@@ -43,6 +43,42 @@ def test_the_generator_can_read_its_inputs():
     )
 
 
+def test_third_party_installs_as_one_selectable_group_per_source():
+    """Each vendored source is its own installer group, not one third-party blob."""
+    generator = load_generator()
+    catalog = {
+        "categories": ["meta", "third-party"],
+        "skills": [
+            {"name": "alpha", "category": "meta"},
+            {
+                "name": "one",
+                "category": "third-party",
+                "directory": "vendor-one",
+            },
+            {
+                "name": "two",
+                "category": "third-party",
+                "directory": "vendor-one",
+            },
+            {
+                "name": "three",
+                "category": "third-party",
+                "directory": "vendor-two",
+            },
+        ],
+    }
+
+    manifest = generator.build_manifest(catalog)
+
+    by_name = {plugin["name"]: plugin for plugin in manifest["plugins"]}
+    assert "third-party" not in by_name
+    assert sorted(by_name["vendor-one"]["skills"]) == [
+        "./skills/third-party/vendor-one/one",
+        "./skills/third-party/vendor-one/two",
+    ]
+    assert by_name["vendor-two"]["skills"] == ["./skills/third-party/vendor-two/three"]
+
+
 def test_reference_is_not_an_installer_group():
     """Reference stays editorial; the installer must not offer a Reference group."""
     generator = load_generator()
@@ -58,10 +94,24 @@ def test_reference_is_not_an_installer_group():
         for category in catalog["categories"]
         if category not in generator.HIDDEN_INSTALL_CATEGORIES
     ]
+
+    def expected_names():
+        """Reversed installable categories, with third-party expanded per source."""
+        names: list[str] = []
+        for category in reversed(installable):
+            if category == "third-party":
+                directories = [
+                    entry["directory"]
+                    for entry in catalog["skills"]
+                    if entry["category"] == "third-party"
+                ]
+                names.extend(reversed(list(dict.fromkeys(directories))))
+            else:
+                names.append(generator.plugin_name(category))
+        return names
+
     # Manifest plugins are reversed so earlier categories win shared pluginNames.
-    assert [plugin["name"] for plugin in manifest["plugins"]] == [
-        generator.plugin_name(category) for category in reversed(installable)
-    ]
+    assert [plugin["name"] for plugin in manifest["plugins"]] == expected_names()
 
 
 def test_each_installable_category_includes_its_reference_requires():
@@ -76,7 +126,7 @@ def test_each_installable_category_includes_its_reference_requires():
         category = entry["category"]
         if category in generator.HIDDEN_INSTALL_CATEGORIES:
             continue
-        plugin = plugins[generator.plugin_name(category)]
+        plugin = plugins[entry.get("directory") or generator.plugin_name(category)]
         assert generator._skill_path(entry) in plugin["skills"]
         for path in generator._reference_closure(entry["name"], by_name):
             assert path in plugin["skills"], (

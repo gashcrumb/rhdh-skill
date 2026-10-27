@@ -15,7 +15,16 @@ from pathlib import Path
 from typing import Any
 
 CATALOG_PATH = Path("skills/meta/setup-rhdh-skills/assets/catalog.json")
-PROMOTED_CATEGORIES = ("jira", "plugins", "ci", "release", "refinement", "reference", "meta")
+PROMOTED_CATEGORIES = (
+    "jira",
+    "plugins",
+    "ci",
+    "release",
+    "refinement",
+    "reference",
+    "meta",
+    "third-party",
+)
 # A cited skill, as `/name`. It must follow a space, a line start, or an opening
 # bracket or backtick, never another path segment, so `~/rhdh-local-setup` and
 # `redhat-developer/rhdh-plugin-catalog` stay paths. Matching only the rhdh-
@@ -23,14 +32,20 @@ PROMOTED_CATEGORIES = ("jira", "plugins", "ci", "release", "refinement", "refere
 # whose subject is not RHDH — prose-editing, clean-prose, mutation-gate,
 # skill-authoring — so renaming one left its callers dangling silently. Every
 # promoted name is kebab-case, but a skill can still be a single token. Route-like
-# tokens are filtered against the promoted/external/retired name sets below. A
+# tokens are filtered against the promoted name set below. A
 # trailing slash or dot means the token is a path, not a skill.
 NAMED_INVOCATION = re.compile(
     r"""(?:^|(?<=[\s(\[`'"]))/([a-z0-9]+(?:-[a-z0-9]+)*)(?![\w-])(?![/.])""",
     re.MULTILINE,
 )
-EXTERNAL_SKILLS = {"code-review", "grilling", "handoff"}
-RETIRED_SKILLS = {"humanizer"}
+# Vendored third-party skills (ADR-0011) are exempt from authoring rules that
+# would require editing upstream SKILL.md prose. Names, descriptions, harness
+# metadata, and invocation flags still apply.
+THIRD_PARTY_CATEGORY = "third-party"
+# A catalog entry may name the subdirectory its skill lives in under
+# skills/<category>/ (vendored third-party skills are grouped per upstream
+# source, ADR-0011). Without it the skill sits directly in its category.
+DIRECTORY_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 # A bundled script reading a file that ships *with it*, such as
 # `_DATA_DIR / "jql-release.md"`. Anchored to the handful of names that mean
 # "this script's own directory", because a bare `dir / "config.json"` is usually
@@ -264,8 +279,6 @@ def _resembles_a_skill(cited: str, known: set[str]) -> bool:
     skill that replaced it. ``/rhdh-jira`` survives as a prefix of ``rhdh-jira-create``;
     ``/image-registry`` resembles nothing in the catalog.
     """
-    if cited in RETIRED_SKILLS:
-        return True
     for name in known:
         if cited.startswith(f"{name}-") or name.startswith(f"{cited}-"):
             return True
@@ -285,7 +298,7 @@ def _validate_named_invocations(
     check catches it — the reference is not a path and not a declared dependency.
     Four dangling ``/rhdh-jira`` citations survived a split this way.
     """
-    known = catalog_names | EXTERNAL_SKILLS
+    known = catalog_names
     for name, skill_dir in sorted(skill_dirs.items()):
         for path in _shipped_files(skill_dir):
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -300,7 +313,7 @@ def _validate_named_invocations(
                         "code": "UNKNOWN_SKILL_REFERENCE",
                         "message": (
                             f"{path.relative_to(root).as_posix()} invokes /{cited}, which is "
-                            f"not a promoted skill or a required external one; it was likely "
+                            f"not a promoted skill; it was likely "
                             f"renamed or split"
                         ),
                     }
@@ -421,7 +434,6 @@ def validate_repository(root: Path) -> dict[str, Any]:
             "errors": [{"code": "CATALOG_MISSING", "message": str(catalog_file)}],
             "promotedSkills": [],
             "humanInvokedSkills": [],
-            "requiredExternalSkills": [],
         }
 
     try:
@@ -432,7 +444,6 @@ def validate_repository(root: Path) -> dict[str, Any]:
             "errors": [{"code": "CATALOG_INVALID", "message": str(exc)}],
             "promotedSkills": [],
             "humanInvokedSkills": [],
-            "requiredExternalSkills": [],
         }
 
     if catalog.get("schemaVersion") != 1:
@@ -447,9 +458,6 @@ def validate_repository(root: Path) -> dict[str, Any]:
     human_names: list[str] = []
     wrapper_delegations: dict[str, tuple[str, Path]] = {}
     entry_by_name: dict[str, dict[str, Any]] = {}
-    external_entries = catalog.get("pack", {}).get("requiredExternalSkills", [])
-    external_names = [item.get("name") for item in external_entries if isinstance(item, dict)]
-    external_set = {name for name in external_names if isinstance(name, str)}
 
     catalog_names = {
         entry.get("name")
@@ -478,8 +486,25 @@ def validate_repository(root: Path) -> dict[str, Any]:
             errors.append({"code": "SKILL_INVOCATION", "message": f"{name}: {invocation}"})
         if invocation == "human":
             human_names.append(name)
+        if category == THIRD_PARTY_CATEGORY and not isinstance(entry.get("directory"), str):
+            errors.append(
+                {
+                    "code": "SKILL_DIRECTORY_MISSING",
+                    "message": (
+                        f"{name}: third-party skills must declare the source directory "
+                        "they are vendored under"
+                    ),
+                }
+            )
 
-        skill_dir = root / "skills" / category / name
+        directory = entry.get("directory")
+        if directory is not None:
+            if not isinstance(directory, str) or not DIRECTORY_NAME.fullmatch(directory):
+                errors.append({"code": "SKILL_DIRECTORY", "message": f"{name}: {directory!r}"})
+                continue
+            skill_dir = root / "skills" / category / directory / name
+        else:
+            skill_dir = root / "skills" / category / name
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.is_file():
             errors.append({"code": "SKILL_MISSING", "message": str(skill_file)})
@@ -521,6 +546,10 @@ def validate_repository(root: Path) -> dict[str, Any]:
             # so restating one here would put the same rule in two places. What it
             # owes instead is that the delegate exists and can be reached.
             wrapper_delegations[name] = (delegates_to, skill_file)
+        elif category == THIRD_PARTY_CATEGORY:
+            # Vendored skill: upstream's authoring standard governs its SKILL.md,
+            # and editing it would break tracked-mode sync (ADR-0011).
+            pass
         elif not re.search(r"(?m)^##\s+Completion\s*$", body):
             errors.append(
                 {
@@ -601,27 +630,18 @@ def validate_repository(root: Path) -> dict[str, Any]:
     for name, entry in entry_by_name.items():
         dependencies = entry.get("requiresSkills", [])
         optional_dependencies = entry.get("optionalSkills", [])
-        external_dependencies = entry.get("requiresExternalSkills", [])
         if not isinstance(dependencies, list):
             errors.append({"code": "REQUIRES_TYPE", "message": name})
             dependencies = []
         if not isinstance(optional_dependencies, list):
             errors.append({"code": "OPTIONAL_REQUIRES_TYPE", "message": name})
             optional_dependencies = []
-        if not isinstance(external_dependencies, list):
-            errors.append({"code": "EXTERNAL_REQUIRES_TYPE", "message": name})
-            external_dependencies = []
         required_names = [dep for dep in dependencies if isinstance(dep, str)]
         optional_names = [dep for dep in optional_dependencies if isinstance(dep, str)]
         graph[name] = [*required_names, *optional_names]
         for dependency in graph[name]:
             if dependency not in internal_names:
                 errors.append({"code": "DEPENDENCY_MISSING", "message": f"{name} -> {dependency}"})
-        for dependency in external_dependencies:
-            if dependency not in external_set:
-                errors.append(
-                    {"code": "EXTERNAL_DEPENDENCY_MISSING", "message": f"{name} -> {dependency}"}
-                )
 
     cycle = _find_cycle(graph) if graph else None
     if cycle:
@@ -629,7 +649,7 @@ def validate_repository(root: Path) -> dict[str, Any]:
 
     skill_dirs: dict[str, Path] = {}
     for category in PROMOTED_CATEGORIES:
-        for skill_file in (root / "skills" / category).glob("*/SKILL.md"):
+        for skill_file in (root / "skills" / category).rglob("SKILL.md"):
             skill_dirs[skill_file.parent.name] = skill_file.parent
     for left, right in _duplicate_files(root, skill_dirs):
         errors.append(
@@ -690,7 +710,6 @@ def validate_repository(root: Path) -> dict[str, Any]:
         "promotedSkills": sorted(promoted_names),
         "humanInvokedSkills": sorted(human_names),
         "delegatingWrappers": {name: target for name, (target, _) in wrapper_delegations.items()},
-        "requiredExternalSkills": sorted(external_set),
     }
 
 

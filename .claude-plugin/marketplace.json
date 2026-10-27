@@ -115,10 +115,10 @@
       "description": "Jira skills from the RHDH pack",
       "skills": [
         "./skills/jira/rhdh-jira-create",
-        "./skills/reference/rhdh-jira-api",
-        "./skills/reference/prose-editing",
-        "./skills/reference/rhdh-jira-authoring",
         "./skills/reference/mutation-gate",
+        "./skills/reference/prose-editing",
+        "./skills/reference/rhdh-jira-api",
+        "./skills/reference/rhdh-jira-authoring",
         "./skills/jira/rhdh-jira-link",
         "./skills/jira/rhdh-jira-refine",
         "./skills/jira/rhdh-jira-sprint-plan",
